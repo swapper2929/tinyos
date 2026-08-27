@@ -4,7 +4,8 @@ LD = i386-elf-ld
 OBJCOPY = i386-elf-objcopy
 QEMU = qemu-system-i386
 
-CXXFLAGS = -m32 -ffreestanding -nostdlib -fno-exceptions -fno-rtti -fno-stack-protector -O2 -Wall -Wextra
+CXXFLAGS = -m32 -ffreestanding -nostdlib -fno-exceptions -fno-rtti \
+           -fno-stack-protector -O2 -Wall -Wextra -fno-builtin
 LDFLAGS = -m elf_i386 -T linker.ld --nmagic
 LIBS = -lgcc
 
@@ -23,24 +24,48 @@ all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
 	$(LD) $(LDFLAGS) -o $@ $(OBJECTS) $(LIBS)
-	@echo "Kernel built: $(TARGET)"
+	@echo "✓ Kernel built: $(TARGET)"
+	@ls -lh $(TARGET)
 
 # Create bootable ISO using GRUB
 iso: $(TARGET)
+	@echo "Creating ISO image..."
 	mkdir -p iso/boot/grub
 	cp $(TARGET) iso/boot/
-	cp grub.cfg iso/boot/grub/
-	grub-mkrescue -o $(ISO) iso
-	@echo "ISO created: $(ISO)"
+	cp grub.cfg iso/boot/grub/ || echo "grub.cfg not found, using default"
+	# Create default grub.cfg if missing
+	@if [ ! -f grub.cfg ]; then \
+		echo 'set timeout=5' > iso/boot/grub/grub.cfg; \
+		echo 'set default=0' >> iso/boot/grub/grub.cfg; \
+		echo 'menuentry "MyOS" {' >> iso/boot/grub/grub.cfg; \
+		echo '  multiboot /boot/kernel.elf' >> iso/boot/grub/grub.cfg; \
+		echo '  boot' >> iso/boot/grub/grub.cfg; \
+		echo '}' >> iso/boot/grub/grub.cfg; \
+	fi
+	grub-mkrescue -o $(ISO) iso 2>/dev/null || grub-mkrescue -o $(ISO) iso
+	@echo "✓ ISO created: $(ISO)"
+	@ls -lh $(ISO)
 
-# Create floppy image (1.44MB)
+# Create floppy image
 floppy: $(TARGET)
-	dd if=/dev/zero of=$(FLOPPY) bs=1024 count=1440
+	@echo "Creating floppy image..."
+	dd if=/dev/zero of=$(FLOPPY) bs=1024 count=1440 2>/dev/null
 	mkdir -p floppy/boot/grub
 	cp $(TARGET) floppy/boot/
-	cp grub.cfg floppy/boot/grub/
-	grub-mkrescue -o $(FLOPPY) floppy/
-	@echo "Floppy image created: $(FLOPPY)"
+	# Use same grub.cfg or create default
+	@if [ -f grub.cfg ]; then \
+		cp grub.cfg floppy/boot/grub/; \
+	else \
+		echo 'set timeout=5' > floppy/boot/grub/grub.cfg; \
+		echo 'set default=0' >> floppy/boot/grub/grub.cfg; \
+		echo 'menuentry "MyOS" {' >> floppy/boot/grub/grub.cfg; \
+		echo '  multiboot /boot/kernel.elf' >> floppy/boot/grub/grub.cfg; \
+		echo '  boot' >> floppy/boot/grub/grub.cfg; \
+		echo '}' >> floppy/boot/grub/grub.cfg; \
+	fi
+	grub-mkrescue -o $(FLOPPY) floppy/ 2>/dev/null || grub-mkrescue -o $(FLOPPY) floppy/
+	@echo "✓ Floppy image created: $(FLOPPY)"
+	@ls -lh $(FLOPPY)
 
 # Run in QEMU
 run: $(TARGET)
@@ -67,4 +92,15 @@ clean:
 # Release build (optimized)
 release: CXXFLAGS += -DNDEBUG -Os
 release: clean all iso floppy
-	@echo "Release build complete!"
+	@echo "✓ Release build complete!"
+
+# Install required tools (Ubuntu/Debian)
+setup:
+	sudo apt-get update
+	sudo apt-get install -y build-essential gcc-multilib g++-multilib xorriso grub-pc-bin grub-common qemu-system-x86 nasm mtools dosfstools
+	@echo "Downloading i386-elf toolchain..."
+	wget -q https://github.com/lordmilko/i686-elf-tools/releases/download/7.1.0/i686-elf-tools-linux.zip
+	unzip -q i686-elf-tools-linux.zip
+	sudo cp i686-elf-tools/bin/* /usr/local/bin/
+	rm -rf i686-elf-tools i686-elf-tools-linux.zip
+	@echo "✓ Setup complete! Run 'make' to build."
