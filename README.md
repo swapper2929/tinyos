@@ -1,6 +1,6 @@
 # tinyos# MyOS - Single-file C++ Bare-metal x86 Operating System
 
-[![Build MyOS Kernel](https://github.com/your-username/your-repo/actions/workflows/build.yml/badge.svg)](https://github.com/your-username/your-repo/actions/workflows/build.yml)
+[![Build MyOS Kernel](https://github.com/swapper2929/tinyos/actions/workflows/build.yml/badge.svg)](https://github.com/swapper2929/tinyos/actions/workflows/build.yml)
 
 ## Overview
 
