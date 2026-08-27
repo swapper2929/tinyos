@@ -1,144 +1,100 @@
-name: Build MyOS Kernel
+# Makefile for MyOS Kernel
+CXX = i386-elf-g++
+LD = i386-elf-ld
+OBJCOPY = i386-elf-objcopy
+QEMU = qemu-system-i386
 
-on:
-  push:
-    branches: [ main, master ]
-    tags:
-      - 'v*'
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
+# Thêm PATH cho toolchain
+export PATH := /usr/local/bin:$(PATH)
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+CXXFLAGS = -m32 -ffreestanding -nostdlib -fno-exceptions -fno-rtti \
+           -fno-stack-protector -O2 -Wall -Wextra -fno-builtin
+LDFLAGS = -m elf_i386 -T linker.ld --nmagic
+LIBS = -lgcc
 
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          gcc-multilib \
-          g++-multilib \
-          xorriso \
-          grub-pc-bin \
-          grub-common \
-          qemu-system-x86 \
-          nasm \
-          mtools \
-          dosfstools
+SOURCES = kernel.cpp
+OBJECTS = $(SOURCES:.cpp=.o)
+TARGET = kernel.elf
+ISO = myos.iso
+FLOPPY = myos.flp
 
-    - name: Install i386-elf toolchain from official source
-      run: |
-        # Download pre-built i386-elf toolchain from reliable source
-        wget -q https://github.com/lordmilko/i686-elf-tools/releases/download/7.1.0/i686-elf-tools-linux.zip
-        unzip -q i686-elf-tools-linux.zip -d /tmp/i686-elf-tools
-        sudo cp /tmp/i686-elf-tools/bin/* /usr/local/bin/
-        rm -rf /tmp/i686-elf-tools i686-elf-tools-linux.zip
+.PHONY: all clean run iso floppy debug release setup
 
-    - name: Verify toolchain
-      run: |
-        i386-elf-g++ --version
-        i386-elf-ld --version
-        which i386-elf-g++
+all: $(TARGET)
 
-    - name: Build kernel
-      run: |
-        make clean
-        make all
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-    - name: Build ISO image
-      run: |
-        make iso
+$(TARGET): $(OBJECTS)
+	$(LD) $(LDFLAGS) -o $@ $(OBJECTS) $(LIBS)
+	@echo "✓ Kernel built: $(TARGET)"
+	@ls -lh $(TARGET)
 
-    - name: Build floppy image
-      run: |
-        make floppy
+iso: $(TARGET)
+	@echo "Creating ISO image..."
+	mkdir -p iso/boot/grub
+	cp $(TARGET) iso/boot/
+	@if [ -f grub.cfg ]; then \
+		cp grub.cfg iso/boot/grub/; \
+	else \
+		echo 'set timeout=5' > iso/boot/grub/grub.cfg; \
+		echo 'set default=0' >> iso/boot/grub/grub.cfg; \
+		echo 'menuentry "MyOS" {' >> iso/boot/grub/grub.cfg; \
+		echo '  multiboot /boot/kernel.elf' >> iso/boot/grub/grub.cfg; \
+		echo '  boot' >> iso/boot/grub/grub.cfg; \
+		echo '}' >> iso/boot/grub/grub.cfg; \
+	fi
+	grub-mkrescue -o $(ISO) iso 2>/dev/null || grub-mkrescue -o $(ISO) iso
+	@echo "✓ ISO created: $(ISO)"
+	@ls -lh $(ISO)
 
-    - name: Test with QEMU (smoke test)
-      run: |
-        # Run QEMU for 3 seconds to check if kernel boots
-        timeout 3s qemu-system-i386 -kernel kernel.elf -nographic -no-reboot || exit 0
-        echo "Kernel boot test passed"
+floppy: $(TARGET)
+	@echo "Creating floppy image..."
+	dd if=/dev/zero of=$(FLOPPY) bs=1024 count=1440 2>/dev/null
+	mkdir -p floppy/boot/grub
+	cp $(TARGET) floppy/boot/
+	@if [ -f grub.cfg ]; then \
+		cp grub.cfg floppy/boot/grub/; \
+	else \
+		echo 'set timeout=5' > floppy/boot/grub/grub.cfg; \
+		echo 'set default=0' >> floppy/boot/grub/grub.cfg; \
+		echo 'menuentry "MyOS" {' >> floppy/boot/grub/grub.cfg; \
+		echo '  multiboot /boot/kernel.elf' >> floppy/boot/grub/grub.cfg; \
+		echo '  boot' >> floppy/boot/grub/grub.cfg; \
+		echo '}' >> floppy/boot/grub/grub.cfg; \
+	fi
+	grub-mkrescue -o $(FLOPPY) floppy/ 2>/dev/null || grub-mkrescue -o $(FLOPPY) floppy/
+	@echo "✓ Floppy image created: $(FLOPPY)"
+	@ls -lh $(FLOPPY)
 
-    - name: Upload artifacts (kernel ELF)
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-elf
-        path: kernel.elf
-        if-no-files-found: error
+run: $(TARGET)
+	$(QEMU) -kernel $(TARGET)
 
-    - name: Upload artifacts (ISO)
-      uses: actions/upload-artifact@v4
-      with:
-        name: myos-iso
-        path: myos.iso
-        if-no-files-found: error
+run-iso: iso
+	$(QEMU) -cdrom $(ISO)
 
-    - name: Upload artifacts (Floppy)
-      uses: actions/upload-artifact@v4
-      with:
-        name: myos-floppy
-        path: myos.flp
-        if-no-files-found: error
+run-floppy: floppy
+	$(QEMU) -fda $(FLOPPY)
 
-  # Create release when tag is pushed
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-      packages: write
-    
-    steps:
-    - name: Download build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts/
+debug: $(TARGET)
+	$(QEMU) -kernel $(TARGET) -s -S &
+	gdb -ex "target remote localhost:1234" -ex "symbol-file $(TARGET)"
 
-    - name: Create release with assets
-      uses: softprops/action-gh-release@v1
-      with:
-        name: MyOS ${{ github.ref_name }}
-        draft: false
-        prerelease: false
-        files: |
-          artifacts/kernel-elf/kernel.elf
-          artifacts/myos-iso/myos.iso
-          artifacts/myos-floppy/myos.flp
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+clean:
+	rm -f $(OBJECTS) $(TARGET) $(ISO) $(FLOPPY)
+	rm -rf iso floppy
 
-  # Alternative: Build using Docker with full toolchain
-  build-docker:
-    runs-on: ubuntu-latest
-    if: false  # Disable by default, can be enabled if needed
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+release: CXXFLAGS += -DNDEBUG -Os
+release: clean all iso floppy
+	@echo "✓ Release build complete!"
 
-    - name: Build with Docker
-      run: |
-        docker run --rm -v $PWD:/build -w /build \
-          i386/ubuntu:22.04 bash -c "
-            apt-get update && apt-get install -y \
-              build-essential gcc-multilib g++-multilib \
-              xorriso grub-pc-bin grub-common nasm mtools dosfstools
-            wget -q https://github.com/lordmilko/i686-elf-tools/releases/download/7.1.0/i686-elf-tools-linux.zip
-            unzip -q i686-elf-tools-linux.zip
-            export PATH=\$PATH:\$PWD/i686-elf-tools/bin
-            make clean && make all && make iso && make floppy
-          "
-
-    - name: Upload artifacts from Docker build
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-elf-docker
-        path: kernel.elf
+setup:
+	@echo "Installing dependencies..."
+	sudo apt-get update
+	sudo apt-get install -y build-essential gcc-multilib g++-multilib xorriso grub-pc-bin grub-common qemu-system-x86 nasm mtools dosfstools wget unzip
+	@echo "Downloading i386-elf toolchain..."
+	wget -q https://github.com/lordmilko/i686-elf-tools/releases/download/7.1.0/i686-elf-tools-linux.zip
+	unzip -q i686-elf-tools-linux.zip
+	sudo cp -r i686-elf-tools/bin/* /usr/local/bin/
+	rm -rf i686-elf-tools i686-elf-tools-linux.zip
+	@echo "✓ Setup complete! Run 'make' to build."
